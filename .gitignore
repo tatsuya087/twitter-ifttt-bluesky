@@ -1,0 +1,21 @@
+# ログファイル
+logs/
+*.log
+
+# ログファイル
+logs/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Database
+*.db
+history.db
