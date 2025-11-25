@@ -2,9 +2,8 @@
 logs/
 *.log
 
-# ログファイル
-logs/
-*.log
+# FxEmbed
+FxEmbed/
 
 # Python
 __pycache__/
