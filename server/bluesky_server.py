@@ -143,7 +143,16 @@ class PostRequest(BaseModel):
     mediaUrls: List[str] = []
     videoThumbnail: Optional[str] = None
     cardShortUrl: Optional[str] = None
-    cardShortUrl: Optional[str] = None
+    facets: Optional[List[dict]] = None
+    quotedTweetId: Optional[str] = None
+
+class IFTTTRequest(BaseModel):
+    handle: str
+    appPassword: str
+    text: str
+    url: str
+
+def compress_image_to_limit(img: Image.Image, max_size_bytes: int = MAX_IMAGE_SIZE_BYTES, initial_quality: int = INITIAL_IMAGE_QUALITY) -> bytes:
     """画像を指定サイズ以下に圧縮"""
     if img.mode != 'RGB':
         img = img.convert('RGB')
@@ -195,7 +204,13 @@ def fetch_ogp_data(url: str) -> dict:
             'User-Agent': 'Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)'
         }
         
-        response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+        # FxTwitter/FixupXの場合はリダイレクトを無効化して直接OGPを取得する
+        if "fxtwitter.com" in url or "fixupx.com" in url:
+            logger.info("FxTwitter/FixupX detected, disabling redirects for OGP fetch")
+            response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT, allow_redirects=False)
+        else:
+            response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+            
         response.raise_for_status()
         
         soup = BeautifulSoup(response.content, 'html.parser')
@@ -936,38 +951,47 @@ async def post_to_bluesky(request: PostRequest):
 
 @app.post("/webhook/ifttt")
 async def webhook_ifttt(request: IFTTTRequest):
-    """IFTTTからのWebhookを受け取るエンドポイント"""
+    """IFTTTからのWebhookを受け取るエンドポイント (最適化版)"""
     try:
         logger.info("-" * 50)
         logger.info(f"IFTTT Webhook受信: {request.handle}")
         
-        # ツイートIDの抽出 (URLから)
-        # 例: https://twitter.com/user/status/1234567890
-        tweet_id = request.url.split('/')[-1]
+        # ツイート本文から末尾のt.coリンクを削除
+        # IFTTTはツイートの最後にリンクを付与することがあるため
+        clean_text = re.sub(r'https:\/\/t\.co\/[a-zA-Z0-9]+$', '', request.text).strip()
+        if clean_text != request.text:
+            logger.info(f"末尾のt.coリンクを削除しました: {request.text} -> {clean_text}")
+        
+        # ツイートURLの処理 (fxtwitter.comに変換)
+        tweet_url = request.url
+        if "twitter.com" in tweet_url:
+            fxtwitter_url = tweet_url.replace("twitter.com", "fxtwitter.com")
+        elif "x.com" in tweet_url:
+            fxtwitter_url = tweet_url.replace("x.com", "fxtwitter.com")
+        else:
+            fxtwitter_url = tweet_url
+            
+        logger.info(f"OGP取得用URL: {fxtwitter_url}")
         
         # PostRequestオブジェクトの構築
+        # cardShortUrlにfxtwitterのURLを設定することで、post_to_bluesky内でOGP取得とリンクカード作成を行わせる
         post_request = PostRequest(
             handle=request.handle,
             appPassword=request.appPassword,
-            text=request.text,
-            tweetUrl=request.url,
+            text=clean_text,
+            tweetUrl=tweet_url, # 元のツイートURL
             author={
-                "name": request.user_name,
-                "screen_name": request.screen_name,
-                "avatar_url": "" # IFTTTからは取得できないため空
+                "name": "Unknown", # IFTTTからは取得できない
+                "screen_name": "unknown",
+                "avatar_url": ""
             },
-            contentType="text", # デフォルト
+            contentType="card", # リンクカードとして処理させる
             mediaUrls=[],
             videoThumbnail=None,
-            cardShortUrl=None,
+            cardShortUrl=fxtwitter_url, # ここにfxtwitterのURLを入れる
             facets=None,
             quotedTweetId=None
         )
-        
-        # 画像がある場合
-        if request.image_url and request.image_url != "NoImage":
-            post_request.contentType = "image"
-            post_request.mediaUrls = [request.image_url]
             
         # 既存の投稿ロジックを呼び出し
         return await post_to_bluesky(post_request)
@@ -975,7 +999,6 @@ async def webhook_ifttt(request: IFTTTRequest):
     except Exception as e:
         logger.error(f"IFTTT Webhookエラー: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
 
 
 @app.get("/")
