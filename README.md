@@ -2,6 +2,19 @@
 
 IFTTTを使用してTwitter/Xのツイートを監視し、自動的にBlueskyに転送するシステム
 
+## 環境のセットアップ
+
+### 必要な環境
+- **Python**: 3.11.7 以上
+
+```
+pip install fastapi uvicorn atproto pillow beautifulsoup4 yt-dlp requests
+```
+
+---
+
+## 使い方
+
 ### 1. ngrokのセットアップ(必要な人だけ)
 ローカルサーバーを外部公開するために `ngrok` を使用します。
 
@@ -14,7 +27,7 @@ IFTTTを使用してTwitter/Xのツイートを監視し、自動的にBluesky�
 
 
 ### 2. IFTTTアプレットの作成
-1. **If This**: "Twitter" を選択。
+1. **If This**: "Twitter(X)" を選択。
 2. **Then That**: "Webhooks" (Make a web request) を選択。
 3. **URL**: `https://xxxx.com` │ ngrokの場合は `URL + /webhook/ifttt` (`https://xxxx.ngrok-free.app/webhook/ifttt`)
 4. **Method**: `POST`
