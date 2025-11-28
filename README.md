@@ -27,8 +27,12 @@ IFTTTを使用してTwitter/Xのツイートを監視し、自動的にBluesky�
      "url": "<<<{{LinkToTweet}}>>>"
    }
    ```
-   ※ `your-handle.bsky.social` と `your-app-password` はご自身のものに書き換えてください。
+   ※ `your-handle.bsky.social` (BlueskyのID) と `your-app-password` (Blueskyのアプリパスワード) はご自身のものに書き換えてください。
    ※ `<<< >>>` はIFTTTのエスケープ記法です。
+
+### 3. 投稿サーバーの起動
+あとは `bluesky_server.py` を起動するだけで、IFTTTから送られてきた情報をもとに自動でBlueskyに投稿されます。
+IFTTTの仕様上、ツイートされてから転送されるまでに5分ほどラグがあります。
 
 ## 主な機能
 
