@@ -21,7 +21,8 @@ from urllib.parse import urlparse
 import time
 import os
 import sys
-from logging.handlers import TimedRotatingFileHandler
+import asyncio
+import yt_dlp
 
 # 定数定義
 REQUEST_TIMEOUT = 15  # リクエストタイムアウト（秒）
@@ -122,7 +123,7 @@ class HistoryDB:
 # グローバルDBインスタンス
 history_db = HistoryDB()
 
-app = FastAPI(title="Tweetdeck to Bluesky Bridge v1.10")
+app = FastAPI(title="Twitter-IFTTT-Bluesky v1.00")
 
 app.add_middleware(
     CORSMiddleware,
@@ -195,6 +196,88 @@ def expand_short_url(short_url: str) -> str:
         return short_url
 
 
+def expand_tco_links_in_text(text: str) -> str:
+    """テキスト内のt.coリンクを全て展開"""
+    tco_pattern = r'https://t\.co/[a-zA-Z0-9]+'
+    
+    def replace_link(match):
+        tco_url = match.group(0)
+        return expand_short_url(tco_url)
+            
+    return re.sub(tco_pattern, replace_link, text)
+
+
+def extract_media_info(url: str) -> dict:
+    """yt-dlpを使用してメディア情報を抽出"""
+    try:
+        logger.info(f"メディア情報抽出開始: {url}")
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': True, # flatに戻す (画像ツイートで動画検索エラーになるのを防ぐ)
+            'ignoreerrors': True, # エラーが出ても続行
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            
+            if not info:
+                logger.warning("yt-dlpから情報を取得できませんでした")
+                return None # Noneを返してフォールバックさせる
+
+            media_info = {
+                'type': 'card', # デフォルト
+                'media_urls': [],
+                'thumbnail': None,
+                'text': info.get('description', ''),
+                'author': {
+                    'name': info.get('uploader', ''),
+                    'screen_name': info.get('uploader_id', ''),
+                    'avatar_url': ''
+                }
+            }
+            
+            # 複数画像 (entriesがある場合)
+            if 'entries' in info:
+                logger.info(f"複数メディア候補を検出: {len(info['entries'])}件")
+                images = []
+                for entry in info['entries']:
+                    if entry.get('thumbnail'):
+                         images.append(entry['thumbnail'])
+                    elif entry.get('url') and 'pbs.twimg.com' in entry.get('url'):
+                         images.append(entry['url'])
+
+                # 重複除去
+                images = list(dict.fromkeys(images))
+                
+                if images:
+                    media_info['type'] = 'image'
+                    media_info['media_urls'] = images
+                    logger.info(f"画像URL抽出: {len(images)}枚")
+                    return media_info
+
+            # 単一動画/GIF
+            if info.get('_type') == 'video' or info.get('ext') in ['mp4', 'gif'] or 'formats' in info:
+                 media_info['type'] = 'video'
+                 media_info['thumbnail'] = info.get('thumbnail')
+                 logger.info(f"動画/GIFを検出: thumb={bool(media_info['thumbnail'])}")
+                 return media_info
+            
+            # 単一画像
+            if info.get('thumbnail'):
+                media_info['type'] = 'image'
+                media_info['media_urls'] = [info['thumbnail']]
+                logger.info("単一画像を検出")
+                return media_info
+                
+            logger.info("メディアは見つかりませんでした。")
+            return media_info
+
+    except Exception as e:
+        logger.error(f"メディア抽出エラー: {e}")
+        return None
+
+
 def fetch_ogp_data(url: str) -> dict:
     """URLからOGP情報を取得"""
     try:
@@ -204,13 +287,7 @@ def fetch_ogp_data(url: str) -> dict:
             'User-Agent': 'Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)'
         }
         
-        # FxTwitter/FixupXの場合はリダイレクトを無効化して直接OGPを取得する
-        if "fxtwitter.com" in url or "fixupx.com" in url:
-            logger.info("FxTwitter/FixupX detected, disabling redirects for OGP fetch")
-            response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT, allow_redirects=False)
-        else:
-            response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
-            
+        response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         
         soup = BeautifulSoup(response.content, 'html.parser')
@@ -956,44 +1033,101 @@ async def webhook_ifttt(request: IFTTTRequest):
         logger.info("-" * 50)
         logger.info(f"IFTTT Webhook受信: {request.handle}")
         
-        # ツイート本文から末尾のt.coリンクを削除
-        # IFTTTはツイートの最後にリンクを付与することがあるため
+        # 1. ツイート本文から末尾のt.coリンクを削除 (メディア用URLなどのため)
         clean_text = re.sub(r'https:\/\/t\.co\/[a-zA-Z0-9]+$', '', request.text).strip()
         if clean_text != request.text:
             logger.info(f"末尾のt.coリンクを削除しました: {request.text} -> {clean_text}")
-        
-        # ツイートURLの処理 (fxtwitter.comに変換)
-        tweet_url = request.url
-        if "twitter.com" in tweet_url:
-            fxtwitter_url = tweet_url.replace("twitter.com", "fxtwitter.com")
-        elif "x.com" in tweet_url:
-            fxtwitter_url = tweet_url.replace("x.com", "fxtwitter.com")
-        else:
-            fxtwitter_url = tweet_url
             
-        logger.info(f"OGP取得用URL: {fxtwitter_url}")
+        # 2. 本文中の残りのt.coリンクを展開
+        clean_text = expand_tco_links_in_text(clean_text)
         
+        # ツイートURLをそのまま使用 (空白除去)
+        tweet_url = request.url.strip()
+        # IFTTTの仕様で <<< >>> で囲まれている場合があるので除去
+        tweet_url = tweet_url.replace('<<<', '').replace('>>>', '').strip()
+        logger.info(f"解析対象URL: {tweet_url}")
+        
+        # 3. メディア情報の抽出 (yt-dlp使用)
+        loop = asyncio.get_event_loop()
+        media_info = await loop.run_in_executor(None, extract_media_info, tweet_url)
+        
+        # yt-dlpが失敗した場合はOGPフォールバック
+        if not media_info:
+            logger.info("yt-dlp失敗のため、OGP情報を使用します")
+            ogp_data = fetch_ogp_data(tweet_url)
+            media_info = {
+                'type': 'card',
+                'media_urls': [],
+                'thumbnail': ogp_data.get('image'),
+                'author': {}
+            }
+            # OGPタイトルから投稿者情報を抽出 "Name (@screen_name) on X"
+            title = ogp_data.get('title', '')
+            match = re.search(r'(.+?)\s\(@([A-Za-z0-9_]+)\)', title)
+            if match:
+                media_info['author']['name'] = match.group(1)
+                media_info['author']['screen_name'] = match.group(2)
+        
+        content_type = media_info.get('type', 'card')
+        card_short_url = tweet_url
+        
+        # 投稿者情報の構築
+        author_info = {
+            "name": "Unknown",
+            "screen_name": "unknown",
+            "avatar_url": ""
+        }
+        
+        # 取得できた情報で上書き
+        if media_info.get('author'):
+            extracted_author = media_info['author']
+            if extracted_author.get('name'):
+                author_info['name'] = extracted_author['name']
+            if extracted_author.get('screen_name'):
+                author_info['screen_name'] = extracted_author['screen_name']
+                if author_info['name'] == "Unknown":
+                    author_info['name'] = author_info['screen_name']
+        
+        # メディアなしの場合のロジック分岐
+        if content_type == 'card':
+            # 本文からURLを抽出
+            urls = extract_urls(clean_text)
+            if urls:
+                # URLがある場合 -> そのURLのリンクカード (1つ目を使用)
+                target_url = urls[0]['url']
+                logger.info(f"メディアなし・URLあり: {target_url} のリンクカードを作成します")
+                card_short_url = target_url
+            elif media_info.get('thumbnail'):
+                 # URLはないがサムネイル（OGP画像など）がある場合 -> ツイート自体のリンクカード（画像あり）
+                 logger.info("メディアなし・URLなし・サムネイルあり: ツイートのリンクカードを作成します")
+                 card_short_url = tweet_url
+            else:
+                # URLもサムネイルもない場合 -> ツイート自体のリンクカード (サムネイルなし)
+                # post_to_blueskyで contentType='text' として扱うことでサムネイルなしリンクカードになる
+                logger.info("メディアなし・URLなし・サムネイルなし: テキストのみの投稿として処理します")
+                content_type = 'text'
+                card_short_url = None
+
         # PostRequestオブジェクトの構築
-        # cardShortUrlにfxtwitterのURLを設定することで、post_to_bluesky内でOGP取得とリンクカード作成を行わせる
         post_request = PostRequest(
             handle=request.handle,
             appPassword=request.appPassword,
             text=clean_text,
-            tweetUrl=tweet_url, # 元のツイートURL
+            tweetUrl=tweet_url,
             author={
-                "name": "Unknown", # IFTTTからは取得できない
-                "screen_name": "unknown",
+                "fullname": author_info['name'], # create_tweet_link_cardで使われるキーに合わせる
+                "username": author_info['screen_name'],
                 "avatar_url": ""
             },
-            contentType="card", # リンクカードとして処理させる
-            mediaUrls=[],
-            videoThumbnail=None,
-            cardShortUrl=fxtwitter_url, # ここにfxtwitterのURLを入れる
+            contentType=content_type,
+            mediaUrls=media_info.get('media_urls', []),
+            videoThumbnail=media_info.get('thumbnail'),
+            cardShortUrl=card_short_url,
             facets=None,
             quotedTweetId=None
         )
             
-        # 既存の投稿ロジックを呼び出し
+        # 投稿ロジック呼び出し
         return await post_to_bluesky(post_request)
         
     except Exception as e:
@@ -1006,7 +1140,7 @@ async def root():
     """ヘルスチェック"""
     return {
         "status": "running",
-        "service": "Tweetdeck to Bluesky Bridge v1.10",
+        "service": "Twitter-IFTTT-Bluesky v1.00",
         "uptime_hours": round((time.time() - server_start_time) / 3600, 2),
         "current_log_file": log_filename
     }
@@ -1020,7 +1154,7 @@ async def health():
 
 if __name__ == "__main__":
     logger.info("=" * 50)
-    logger.info("Bluesky投稿サーバー v1.10 起動")
+    logger.info("Twitter-IFTTT-Bluesky v1.00 起動")
     logger.info("URL: http://localhost:5000")
     logger.info("=" * 50)
     
