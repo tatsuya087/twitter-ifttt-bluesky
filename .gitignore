@@ -2,9 +2,6 @@
 logs/
 *.log
 
-# FxEmbed
-FxEmbed/
-
 # Python
 __pycache__/
 *.py[cod]
@@ -18,3 +15,6 @@ Thumbs.db
 # Database
 *.db
 history.db
+
+# Debug scripts
+debug_*.py
