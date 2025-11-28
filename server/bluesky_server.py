@@ -25,13 +25,13 @@ import asyncio
 import yt_dlp
 
 # 定数定義
-REQUEST_TIMEOUT = 15  # リクエストタイムアウト（秒）
-MAX_IMAGE_SIZE_BYTES = 950 * 1024  # 最大画像サイズ（バイト）
-INITIAL_IMAGE_QUALITY = 85  # 初期JPEG品質
-MIN_IMAGE_QUALITY = 20  # 最小JPEG品質
-PLAY_BUTTON_IMAGE_PATH = "assets/play-circle.png"  # 再生ボタン画像のパス
+REQUEST_TIMEOUT = 15
+MAX_IMAGE_SIZE_BYTES = 950 * 1024
+INITIAL_IMAGE_QUALITY = 85
+MIN_IMAGE_QUALITY = 20
+PLAY_BUTTON_IMAGE_PATH = "assets/play-circle.png"
 
-# スクリプトのディレクトリに移動（重要！）
+# スクリプトのディレクトリに移動
 script_dir = os.path.dirname(os.path.abspath(__file__))
 os.chdir(script_dir)
 print(f"作業ディレクトリ: {script_dir}")
@@ -49,15 +49,12 @@ log_filename = os.path.join(LOGS_DIR, "server.log")
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-# 既存のハンドラーをクリア（再読み込み時などの重複防止）
 if logger.hasHandlers():
     logger.handlers.clear()
 
-# フォーマッター作成
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 
 # ファイルハンドラー (TimedRotatingFileHandler)
-# 12時間ごとにローテーション、バックアップは7世代分保存
 file_handler = TimedRotatingFileHandler(
     log_filename,
     when='H',
@@ -68,7 +65,7 @@ file_handler = TimedRotatingFileHandler(
 file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
-# ストリームハンドラー (コンソール出力)
+# ストリームハンドラー
 stream_handler = logging.StreamHandler()
 stream_handler.setFormatter(formatter)
 logger.addHandler(stream_handler)
@@ -127,7 +124,7 @@ app = FastAPI(title="Twitter-IFTTT-Bluesky v1.00")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://x.com"],  # Tweetdeckのみ許可
+    allow_origins=["https://x.com"],
     allow_credentials=True,
     allow_methods=["POST", "GET"],
     allow_headers=["Content-Type"],
@@ -214,8 +211,8 @@ def extract_media_info(url: str) -> dict:
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
-            'extract_flat': True, # flatに戻す (画像ツイートで動画検索エラーになるのを防ぐ)
-            'ignoreerrors': True, # エラーが出ても続行
+            'extract_flat': True, # 画像ツイート対策
+            'ignoreerrors': True,
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -223,10 +220,10 @@ def extract_media_info(url: str) -> dict:
             
             if not info:
                 logger.warning("yt-dlpから情報を取得できませんでした")
-                return None # Noneを返してフォールバックさせる
+                return None
 
             media_info = {
-                'type': 'card', # デフォルト
+                'type': 'card',
                 'media_urls': [],
                 'thumbnail': None,
                 'text': info.get('description', ''),
@@ -237,7 +234,7 @@ def extract_media_info(url: str) -> dict:
                 }
             }
             
-            # 複数画像 (entriesがある場合)
+            # 複数画像
             if 'entries' in info:
                 logger.info(f"複数メディア候補を検出: {len(info['entries'])}件")
                 images = []
@@ -247,7 +244,6 @@ def extract_media_info(url: str) -> dict:
                     elif entry.get('url') and 'pbs.twimg.com' in entry.get('url'):
                          images.append(entry['url'])
 
-                # 重複除去
                 images = list(dict.fromkeys(images))
                 
                 if images:
@@ -387,12 +383,7 @@ def download_image(url: str) -> Image.Image:
 
 
 def add_play_button(img: Image.Image) -> Image.Image:
-    """画像の中央に再生ボタンを合成
-    
-    外部画像ファイル (play-circle.png) を使用
-    サイズ: 144x144px（固定）
-    """
-    # 再生ボタン画像を読み込み
+    """画像の中央に再生ボタンを合成"""
     play_button_path = os.path.join(script_dir, PLAY_BUTTON_IMAGE_PATH)
     
     if not os.path.exists(play_button_path):
@@ -401,49 +392,37 @@ def add_play_button(img: Image.Image) -> Image.Image:
         return img
     
     try:
-        # 再生ボタン画像を読み込み
         play_button = Image.open(play_button_path)
         
-        # 再生ボタンがRGBAモードでない場合は変換
         if play_button.mode != 'RGBA':
             play_button = play_button.convert('RGBA')
         
-        # 元画像をRGBAモードに変換
         if img.mode != 'RGBA':
             img_rgba = img.convert('RGBA')
         else:
             img_rgba = img.copy()
         
-        # 画像サイズと中心点
         img_width, img_height = img_rgba.size
         center_x = img_width // 2
         center_y = img_height // 2
         
-        # 再生ボタンのサイズ（144x144pxで固定）
         button_width, button_height = play_button.size
         
-        # 画像サイズに応じてスケーリング
-        # 画像の短辺の1/4のサイズにする
         min_dimension = min(img_width, img_height)
         target_button_size = int(min_dimension / 4)
-        
-        # 最低サイズ制限（任意、例えば32px以下にはしないなど）
         target_button_size = max(target_button_size, 32)
         
         play_button = play_button.resize((target_button_size, target_button_size), Image.LANCZOS)
         button_width, button_height = target_button_size, target_button_size
         logger.info(f"再生ボタンをリサイズ: {button_width}x{button_height}px (元画像の短辺: {min_dimension}px)")
         
-        # 再生ボタンを中央に配置
         position = (
             center_x - button_width // 2,
             center_y - button_height // 2
         )
         
-        # アルファチャンネルを使って合成
         img_rgba.paste(play_button, position, play_button)
         
-        # 元の画像モードがRGBだった場合は戻す
         if img.mode == 'RGB':
             img_with_button = img_rgba.convert('RGB')
         else:
@@ -551,7 +530,7 @@ def combine_images(image_urls: List[str], target_width: int = 800, target_height
                 img_cropped = resize_and_crop(img, quarter_width, quarter_height)
                 combined.paste(img_cropped, pos)
         
-        # 画像圧縮（共通関数を使用）
+        # 画像圧縮
         image_data = compress_image_to_limit(combined)
         
         logger.info(f"画像結合成功: {combined.size}, {len(image_data)} bytes")
@@ -591,17 +570,7 @@ def extract_mentions(text: str) -> list:
 
 
 def extract_hashtags(text: str) -> list:
-    """テキストからハッシュタグを抽出
-    
-    Twitter仕様:
-    - 英数字、アンダースコア、CJK文字(漢字・ひらがな・カタカナ)
-    - 記号(アンダースコア以外)で終了
-    """
-    # CJK統合漢字、ひらがな、カタカナの範囲を明示的に指定
-    # \u3040-\u309F: ひらがな
-    # \u30A0-\u30FF: カタカナ
-    # \u4E00-\u9FFF: CJK統合漢字
-    # \uFF66-\uFF9F: 半角カタカナ
+    """テキストからハッシュタグを抽出"""
     hashtag_pattern = r'#([A-Za-z0-9_\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\uFF66-\uFF9F]+)'
     hashtags = []
     
@@ -609,18 +578,17 @@ def extract_hashtags(text: str) -> list:
         start = match.start()
         tag = match.group(1)
         
-        # 末尾から記号を削除(英数字・アンダースコア・CJK文字以外)
         clean_tag = tag
         while clean_tag and not (clean_tag[-1].isalnum() or 
                                  clean_tag[-1] == '_' or 
-                                 '\u3040' <= clean_tag[-1] <= '\u309F' or  # ひらがな
-                                 '\u30A0' <= clean_tag[-1] <= '\u30FF' or  # カタカナ
-                                 '\u4E00' <= clean_tag[-1] <= '\u9FFF' or  # 漢字
-                                 '\uFF66' <= clean_tag[-1] <= '\uFF9F'):   # 半角カナ
+                                 '\u3040' <= clean_tag[-1] <= '\u309F' or
+                                 '\u30A0' <= clean_tag[-1] <= '\u30FF' or
+                                 '\u4E00' <= clean_tag[-1] <= '\u9FFF' or
+                                 '\uFF66' <= clean_tag[-1] <= '\uFF9F'):
             clean_tag = clean_tag[:-1]
         
         if clean_tag:
-            actual_end = start + 1 + len(clean_tag)  # +1 は # の分
+            actual_end = start + 1 + len(clean_tag)
             hashtags.append({
                 'start': start,
                 'end': actual_end,
@@ -758,7 +726,7 @@ def create_external_link_card(client: Client, url: str, ogp_data: dict):
                     img = img.resize(new_size, Image.LANCZOS)
                     logger.info(f"OG画像をリサイズ: {new_size}")
                 
-                # 画像圧縮（共通関数を使用）
+                # 画像圧縮
                 image_data = compress_image_to_limit(img)
                 thumb = upload_blob(client, image_data)
                 
@@ -917,7 +885,6 @@ async def post_to_bluesky(request: PostRequest):
             if request.videoThumbnail:
                 img = download_image(request.videoThumbnail)
                 if img:
-                    # 再生ボタンを追加
                     img_with_play_button = add_play_button(img)
                     
                     output = BytesIO()
@@ -944,19 +911,10 @@ async def post_to_bluesky(request: PostRequest):
             logger.warning(f"テキストが長すぎます: {count_graphemes(post_text)} graphemes")
             post_text, truncate_facet = truncate_text_for_bluesky(post_text, request.tweetUrl)
         
-        # クライアントからfacetsが送られてきた場合はそれを使用、なければサーバーで生成
         if request.facets is not None:
             facets = request.facets
-            # 切り詰められた場合、範囲外のfacetを除外・調整する必要があるが、
-            # 簡易的に、切り詰め発生時はサーバー側で再生成するか、
-            # あるいはtruncate_facetだけ追加して許容するか。
-            # ここでは、切り詰めが発生した場合はサーバー側で再生成する方が安全かもしれないが、
-            # DOMベースの正確さを優先するなら、切り詰め位置より前のfacetだけ残すのがベスト。
-            
             if truncate_facet:
-                # 切り詰め後のバイト長
                 truncated_byte_len = len(post_text.encode('utf-8')) - len("…Read more".encode('utf-8'))
-                # 範囲内のfacetのみ残す
                 valid_facets = []
                 for f in facets:
                     if f['index']['byteEnd'] <= truncated_byte_len:
@@ -980,7 +938,6 @@ async def post_to_bluesky(request: PostRequest):
                 logger.info("引用元ツイートのBluesky投稿が見つかりました")
                 quoted_uri, quoted_cid = quoted_post
                 
-                # 引用レコードを作成
                 record_embed = models.AppBskyEmbedRecord.Main(
                     record=models.ComAtprotoRepoStrongRef.Main(
                         uri=quoted_uri,
@@ -989,14 +946,12 @@ async def post_to_bluesky(request: PostRequest):
                 )
                 
                 if embed:
-                    # 既に画像や動画がある場合は RecordWithMedia を使用
                     logger.info("メディア付き引用投稿")
                     embed = models.AppBskyEmbedRecordWithMedia.Main(
                         media=embed,
                         record=record_embed
                     )
                 else:
-                    # テキストのみの場合は Record を使用
                     logger.info("テキストのみ引用投稿")
                     embed = record_embed
             else:
@@ -1011,7 +966,6 @@ async def post_to_bluesky(request: PostRequest):
         
         logger.info(f"投稿成功: {response.uri}")
         
-        # 投稿履歴を保存
         tweet_id = request.tweetUrl.split('/')[-1]
         history_db.save_post(tweet_id, response.uri, response.cid)
         
@@ -1028,12 +982,12 @@ async def post_to_bluesky(request: PostRequest):
 
 @app.post("/webhook/ifttt")
 async def webhook_ifttt(request: IFTTTRequest):
-    """IFTTTからのWebhookを受け取るエンドポイント (最適化版)"""
+    """IFTTTからのWebhookを受け取るエンドポイント"""
     try:
         logger.info("-" * 50)
         logger.info(f"IFTTT Webhook受信: {request.handle}")
         
-        # 1. ツイート本文から末尾のt.coリンクを削除 (メディア用URLなどのため)
+        # 1. ツイート本文から末尾のt.coリンクを削除
         clean_text = re.sub(r'https:\/\/t\.co\/[a-zA-Z0-9]+$', '', request.text).strip()
         if clean_text != request.text:
             logger.info(f"末尾のt.coリンクを削除しました: {request.text} -> {clean_text}")
@@ -1041,13 +995,12 @@ async def webhook_ifttt(request: IFTTTRequest):
         # 2. 本文中の残りのt.coリンクを展開
         clean_text = expand_tco_links_in_text(clean_text)
         
-        # ツイートURLをそのまま使用 (空白除去)
+        # ツイートURLをそのまま使用
         tweet_url = request.url.strip()
-        # IFTTTの仕様で <<< >>> で囲まれている場合があるので除去
         tweet_url = tweet_url.replace('<<<', '').replace('>>>', '').strip()
         logger.info(f"解析対象URL: {tweet_url}")
         
-        # 3. メディア情報の抽出 (yt-dlp使用)
+        # 3. メディア情報の抽出
         loop = asyncio.get_event_loop()
         media_info = await loop.run_in_executor(None, extract_media_info, tweet_url)
         
@@ -1061,7 +1014,7 @@ async def webhook_ifttt(request: IFTTTRequest):
                 'thumbnail': ogp_data.get('image'),
                 'author': {}
             }
-            # OGPタイトルから投稿者情報を抽出 "Name (@screen_name) on X"
+            # OGPタイトルから投稿者情報を抽出
             title = ogp_data.get('title', '')
             match = re.search(r'(.+?)\s\(@([A-Za-z0-9_]+)\)', title)
             if match:
@@ -1071,14 +1024,12 @@ async def webhook_ifttt(request: IFTTTRequest):
         content_type = media_info.get('type', 'card')
         card_short_url = tweet_url
         
-        # 投稿者情報の構築
         author_info = {
             "name": "Unknown",
             "screen_name": "unknown",
             "avatar_url": ""
         }
         
-        # 取得できた情報で上書き
         if media_info.get('author'):
             extracted_author = media_info['author']
             if extracted_author.get('name'):
@@ -1088,34 +1039,27 @@ async def webhook_ifttt(request: IFTTTRequest):
                 if author_info['name'] == "Unknown":
                     author_info['name'] = author_info['screen_name']
         
-        # メディアなしの場合のロジック分岐
         if content_type == 'card':
-            # 本文からURLを抽出
             urls = extract_urls(clean_text)
             if urls:
-                # URLがある場合 -> そのURLのリンクカード (1つ目を使用)
                 target_url = urls[0]['url']
                 logger.info(f"メディアなし・URLあり: {target_url} のリンクカードを作成します")
                 card_short_url = target_url
             elif media_info.get('thumbnail'):
-                 # URLはないがサムネイル（OGP画像など）がある場合 -> ツイート自体のリンクカード（画像あり）
                  logger.info("メディアなし・URLなし・サムネイルあり: ツイートのリンクカードを作成します")
                  card_short_url = tweet_url
             else:
-                # URLもサムネイルもない場合 -> ツイート自体のリンクカード (サムネイルなし)
-                # post_to_blueskyで contentType='text' として扱うことでサムネイルなしリンクカードになる
                 logger.info("メディアなし・URLなし・サムネイルなし: テキストのみの投稿として処理します")
                 content_type = 'text'
                 card_short_url = None
 
-        # PostRequestオブジェクトの構築
         post_request = PostRequest(
             handle=request.handle,
             appPassword=request.appPassword,
             text=clean_text,
             tweetUrl=tweet_url,
             author={
-                "fullname": author_info['name'], # create_tweet_link_cardで使われるキーに合わせる
+                "fullname": author_info['name'],
                 "username": author_info['screen_name'],
                 "avatar_url": ""
             },
@@ -1127,7 +1071,6 @@ async def webhook_ifttt(request: IFTTTRequest):
             quotedTweetId=None
         )
             
-        # 投稿ロジック呼び出し
         return await post_to_bluesky(post_request)
         
     except Exception as e:
